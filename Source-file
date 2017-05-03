@@ -1,0 +1,216 @@
+#include "stdint.h"
+#include "stdbool.h"
+#include "inc/hw_memmap.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/gpio.h"
+#include "driverlib/debug.h"
+#include "driverlib/pwm.h"
+#include "driverlib/pin_map.h"
+#include "inc/hw_gpio.h"
+#include "inc/hw_pwm.h"
+//#include "inc/tm4c123gh6pm.h"
+#include "inc/hw_types.h"
+#include "math.h"
+#include "driverlib/interrupt.h"
+#include "inc/hw_ints.h"
+#include "driverlib/timer.h"
+
+
+void computeSineLookupTable(void);
+void computeArray(void);
+
+#define 	PI				3.14159265358979323846264
+#define 	PWM_FREQ 		100000  // PWM frequency  = 100 KHz..
+#define 	PWM_PERIOD		0.00001 // PWM period = 10 uS.
+
+	//------------------------------------------------------------
+
+	volatile uint32_t ui32Load;
+	volatile uint32_t ui32PWMClock;
+	volatile uint32_t ui32TimerLoad;
+	int var2 = 0;
+	int step;
+	int periodChange = 50;
+	int Freqchanges = 0;
+	int Priority = 1;
+	float SineValues[2000];
+	float AngleStepRate;
+//	int FreqStep[7] = {1,2,4,5,8,10,20};
+	int PtsNum[151];
+	int prom = 0;
+
+	// variables for Loading value of the counter and for PWM clock.
+
+int main(void)
+ {
+	SysCtlClockSet(SYSCTL_SYSDIV_5|SYSCTL_USE_PLL|SYSCTL_OSC_MAIN|SYSCTL_XTAL_16MHZ); // Set system clock = 20 MHz.
+	SysCtlPWMClockSet(SYSCTL_PWMDIV_4); // Set the PWM clock = 10 MHz.
+
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM1); // Enable PWM MODULE 1.
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOD); // Enable GPIO PORT D.
+
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0); // Enable TIMER 0.
+	TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC); // Configure Periodic Timer
+	
+	ui32TimerLoad = (SysCtlClockGet()/periodChange*25); // Timer period =  2 seconds.
+	
+	TimerLoadSet(TIMER0_BASE, TIMER_A, ui32TimerLoad -1); // Load the Timer
+	
+	GPIOPinTypePWM(GPIO_PORTD_BASE, GPIO_PIN_0); // Configure GPIO Port D Pin 0 as a PWM Output .
+	GPIOPinConfigure(GPIO_PD0_M1PWM0); //  Module 1, PWM generator 0 will be the PWM source for Port D Pin 0.
+	
+	
+	//ui32PWMClock = PWMClockGet(PWM1_BASE); // set the PWM Clock.
+	ui32PWMClock = 10000000; // set the PWM Clock.
+	ui32Load = (ui32PWMClock / PWM_FREQ) - 1; // Set the Load register value.
+	PWMGenConfigure(PWM1_BASE, PWM_GEN_0, PWM_GEN_MODE_DOWN); // set the timer of the PWM Module 1 , GEN. 0 in count-down mode.
+	PWMGenPeriodSet(PWM1_BASE, PWM_GEN_0, ui32Load);  // Set the Period of the PWM Signal
+
+	//PWMPulseWidthSet(PWM1_BASE, PWM_OUT_0, ui32Load/2 ); // Set the pulse - width of the PWM signal.
+	PWMOutputState(PWM1_BASE, PWM_OUT_0_BIT, true);		// Enable PWM Output.
+	PWMGenEnable(PWM1_BASE, PWM_GEN_0); 				// Enable PWM Module 1 Generator 0
+
+	computeArray();
+	computeSineLookupTable();
+
+	step = 1; // Sine wave frequency depends of this step. Step = 1 -> F(sine) = 50Hz.
+			  // 										   Step = 20 ->F(sine) = 1Khz.
+
+	// PWM	INTERRUPT CONFIGURATION ------------------------------------------
+	IntEnable(INT_PWM1_0); // Enable Interrupt controller for PWM module 1 - Generator 0
+	IntPrioritySet(INT_PWM1_0, Priority);
+	PWMIntEnable(PWM1_BASE, PWM_INT_GEN_0); // Enable interrupts at PWM module
+	PWMGenIntTrigEnable(PWM1_BASE, PWM_GEN_0, PWM_INT_CNT_ZERO); // Interrupt when Counter = Zero
+	//IntMasterEnable(); // Interrupts are passed to the CPU
+	// -----------------------------------------------------------------------
+
+
+	// TIMER INTERRUPT CONFIGURATION -----------------------------------------
+	IntEnable(INT_TIMER0A);
+	IntPrioritySet(INT_PWM1_0, Priority-1);
+	TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+	IntMasterEnable(); // Interrupts are passed to the CPU
+	//------------------------------------------------------------------------
+	TimerEnable(TIMER0_BASE, TIMER_A);
+
+	while(true)
+	{
+
+	}
+
+ }
+
+ // ------------------ COMPUTING ARRAY WITH POINTS -----------------------------------------
+void computeArray(void)
+	{
+		int var3;
+		int first_freq = 50;
+
+		for(var3 = 0; var3 < 151; var3++)
+		{
+			PtsNum[var3] = 1/(PWM_PERIOD*first_freq);
+			first_freq += 5;
+		}
+
+	}
+
+// ----------------------------------------------------------------------------------
+void computeSineLookupTable(void)
+	{
+		int var;
+		AngleStepRate = (((360/(float)PtsNum[prom])*PI)/180);
+		for (var = 0; var < PtsNum[prom]; var++)
+		{
+			SineValues[var] = ((uint32_t)(ui32Load/2) + ((uint32_t)ui32Load/2)*sin(AngleStepRate*var)*0.8);
+		}
+	}
+
+//PWM_X_GENA_ACTLOAD_ONE
+//PWM_X_GENA_ACTCMPAD_ZERO
+//PWM_O_X_LOAD
+
+// PWM interrupt handler. This function changes duty cycle of the signal with fixed step. Every time the counter reaches zero the duty
+// cycle got changed.
+
+void PWMIntHandler(void)
+{
+
+	PWMGenIntClear(PWM1_BASE, PWM_GEN_0, PWM_INT_CNT_ZERO);
+	//PWMGenIntTrigDisable(PWM1_BASE, PWM_GEN_0, PWM_INT_CNT_ZERO);
+	if(var2 <= PtsNum[prom])
+	{
+		PWMPulseWidthSet(PWM1_BASE, PWM_OUT_0, (uint32_t)SineValues[var2]);
+		var2 += step;
+	}
+
+	else
+	{
+		var2 = 0;
+		PWMPulseWidthSet(PWM1_BASE, PWM_OUT_0, (uint32_t)SineValues[var2]);
+		var2 += step;
+	}
+
+}
+
+
+//Timer interrupt handler. This function changes the number points required for sine wave. The number of points required to create
+// sine wave with defined frequency is stored in array. Every time the program goes to this IRQ, duty cycles with the new points have
+// been calculated.
+
+void TimerIntHandler(void)
+{
+
+	TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+	PWMPulseWidthSet(PWM1_BASE, PWM_OUT_0, ui32Load/2); // While computing values of the sine wave - Vout = 0V
+
+	// ---------------------------------------------------------------------------------------------------
+	if (prom < 151)
+	{
+		prom += 1; // prom is an element of array which contains the number of points per sine wave.
+		computeSineLookupTable(); // Calculate new values of the duty cycle.
+	//prom += 1;
+	}
+	else
+	{
+		prom = 0;
+		computeSineLookupTable();
+	}
+	//-----------------------------------------------FIRST VERSION----------------------------------------
+
+/*
+	if( Freqchanges <=  3 )
+	{
+		//ui32TimerLoad /= 2;
+		//TimerLoadSet(TIMER0_BASE, TIMER_A, ui32TimerLoad -1); // Load the Timer
+		step *= 2;
+		Freqchanges += 1;
+	}
+
+	else
+	{
+		//ui32TimerLoad = (SysCtlClockGet()/periodChange*100); // Timer period.
+		//TimerLoadSet(TIMER0_BASE, TIMER_A, ui32TimerLoad -1);
+		step = 1;
+		Freqchanges = 0;
+	}
+*/
+
+	/*
+	 ------------------------------ LAST VERSION 27.04.2017 --------------------------------------------------
+	if ( step < 20 )
+	{
+		step += 1;
+		//step = FreqStep[Freqchanges]; // FreqStep is an array with 7 fixed values - number of PWMs
+		//Freqchanges += 1;
+	}
+
+	else
+	{
+		step = 1;
+		//Freqchanges = 0;
+		//step = FreqStep[Freqchanges];
+	}
+	--------------------------------------------------------------------------------------------------
+	*/
+
+}
